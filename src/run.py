@@ -35,7 +35,7 @@ def run_model(cfg: DictConfig):
     dataset = dataset.map(_run)
     ### Save responses
     output_dir = cfg.output_dir
-    few_shot_string = "_few_shot" if model.config.few_shot_dataset else ""
+    few_shot_string = "_few_shot" if model.few_shot_dataset is not None else ""
     output_path = f"{output_dir}/{model.model_name}_{model.inference_mode}{few_shot_string}.json"
     save_to(dataset.to_pandas(), output_path)
 

@@ -99,9 +99,9 @@ class RLTrainer():
 
     def __init__(self,
             model: AgentPretrainedModel,
-            ref_model: AgentPretrainedModel,
             args: RLTrainingArguments,
             train_dataset_path: str,
+            ref_model: AgentPretrainedModel = None,
             eval_dataset_path: str = None,
             test_dataset_path: str = None,
             max_seq_length: Optional[int] = None,
@@ -128,6 +128,7 @@ class RLTrainer():
         ### Models
         self.policy_model = model
         self.ref_model = ref_model
+        self.model_config = None
         self.reward_model = RewardModel(
             model=self.policy_model,
             voc_gamma=self.args.voc_gamma,
@@ -259,7 +260,6 @@ class RLTrainer():
         thoughts = [trim(t) for t in data['thought']]
         instruction = self.policy_model.instruction
         dataset_prefixes = [DATASET_TO_PREF.get(d, "") for d in data['dataset']]
-        print(f"Dataset_prefixes: {dataset_prefixes} for datasets {data['dataset']}")
         prompts = [self.bos_token + self.user_format.format(user=instruction + d + p) for p, d in zip(prompts, dataset_prefixes)]
         answers = [self.assistant_format.format(assistant=c) + self.eos_token for c in answers]
         responses = [self.assistant_format.format(assistant=a) + self.eos_token for a in responses]

@@ -17,7 +17,9 @@ def train_model(cfg: DictConfig):
     print(cfg)
     logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
     logger = set_logger(logger_name="run")
+    model_cfg = cfg.trainer.model
     trainer = instantiate(cfg.trainer)
+    trainer.model_config = model_cfg
     trainer.set_logger(logger)
     trainer.reward_model.logger = logger
     trainer.train()

@@ -65,16 +65,12 @@ class EITrainer(RLTrainer):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        rewards: torch.Tensor,
         thoughts_mask: torch.Tensor,
         targets_mask: torch.Tensor
     ):  
         ### Select best input_ids, based on rewards
         thoughts_mask = torch.clamp(thoughts_mask + targets_mask, 0, 1)
         labels = torch.where(thoughts_mask == 1, input_ids, torch.tensor(-100).to(self.current_device))
-        decoded_chosen_input_ids = self.tokenizer.batch_decode(input_ids, skip_special_tokens=True)
-        for d in decoded_chosen_input_ids:
-            self.logger.info(f"Decoded chosen input_ids:\n{d}")
         ### Prepare step data
         step_data = {
             "input_ids": input_ids,
@@ -123,7 +119,8 @@ class EITrainer(RLTrainer):
         sample_size = self.args.rollout_sample_size
         new_dataset = {
         }
-        bs, step_size = len(prompts), self.args.mini_batch_size
+        bs, step_size = len(prompts), self.args.mini_batch_size*2
+        progress_bar = tqdm(total=bs*sample_size//step_size)
         for _ in range(sample_size):
             for start_i in range(0, bs, step_size):
                 end_i = min(start_i + step_size, bs)
@@ -136,6 +133,7 @@ class EITrainer(RLTrainer):
                 new_dataset['thought'] = new_dataset.get('thought', []) + thoughts_batch
                 new_dataset['dataset'] = new_dataset.get('dataset', []) + datasets_to_add
                 new_dataset['answer'] = new_dataset.get('answer', []) + answers[start_i:end_i]
+                progress_bar.update()
         new_dataset['_id'] = new_dataset['_id'] + ids
         new_dataset['question'] = new_dataset['question'] + prompts
         new_dataset['answer'] = new_dataset['answer'] + answers
@@ -184,13 +182,13 @@ class EITrainer(RLTrainer):
         self.policy_model.eval()
         new_dataset = {}
         use_hint = False
-        ### Iterate over train dataloader
+        ### Iterate over train dataloader to generate data
         self.logger.info(f"Iterating over dataloader of length: {len(self.train_dataloader)}")
         for step, batch in enumerate(tqdm(self.train_dataloader)):
             self.logger.info(f"Running step {step}/{len(self.train_dataloader)}")
             if step >= len(self.train_dataloader)//2:
                 use_hint = False
-                # self.policy_model.few_shot_dataset = None
+                self.policy_model.few_shot_dataset = None
             batch = self.sample_rollouts(batch, hint=use_hint).to_dict()
             for k, v in batch.items():
                 new_dataset[k] = new_dataset.get(k, []) + v
@@ -218,19 +216,17 @@ class EITrainer(RLTrainer):
                 batch = self._format_data(batch)
                 input_ids = batch['input_ids']
                 attention_mask = batch['attention_mask']
-                rewards = torch.tensor(batch['reward']).to(self.current_device)
                 thoughts_mask = batch['thoughts_mask']
                 targets_mask = batch['target_mask']
                 loss = self.step(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    rewards=rewards,
                     thoughts_mask=thoughts_mask,
                     targets_mask=targets_mask,
                 ) 
 
                 ### Logging
-                average_reward = rewards.mean().item()
+                average_reward = torch.tensor(batch['reward']).mean().item()
                 lenghts = batch['thoughts_mask'].sum(dim=1).float()
                 average_length = lenghts.mean().item()
                 std_length = lenghts.std().item()

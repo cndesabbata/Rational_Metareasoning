@@ -100,7 +100,7 @@ class AgentPretrainedModel:
         for i, dataset in enumerate(datasets):
             use_hint = hint
             try:
-                df = self.few_shot_dataset[self.few_shot_dataset["dataset"] == dataset].sample(3)
+                df = self.few_shot_dataset[self.few_shot_dataset["dataset"] == dataset].sample(5)
             except:
                 prefixes.append("")
                 continue
@@ -156,71 +156,6 @@ class AgentPretrainedModel:
         all_thoughts, all_answers = split_thought_and_answer(outputs)
         return all_thoughts, all_answers
 
-    def forward(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        **kwargs
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
-        '''Forward pass of the model. Rewritten from Huggingface to unify the format for all models.'''
-        
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        hidden_states = outputs[0]
-        
-        logits = self.lm_head(hidden_states)
-        logits = logits.float()
-
-        loss = None
-        if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
-
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=hidden_states,
-            attentions=outputs.attentions,
-        )
-
     def policy_forward(
             self,
             input_ids: torch.Tensor,
@@ -237,24 +172,37 @@ class AgentPretrainedModel:
         Returns:
             PolicyModelOutput: The model output.
         '''
-        outputs = self.forward(
+        input_ids = input_ids.to(self.current_device)
+        outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            position_ids=None,
+            past_key_values=None,
+            inputs_embeds=None,
+            use_cache=None,
+            output_attentions=None,
+            output_hidden_states=True,
+            return_dict=None,
         )
-        hidden_states = outputs.hidden_states
-        logprobs = logprobs_from_logits(outputs.logits[:, :-1, :], input_ids[:,1:], gather=True)
+        hidden_states = outputs[0].to(self.current_device)
+        logits = self.lm_head(hidden_states)
+        logits = logits.float().to(self.current_device)
+        logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:,1:], gather=True)
         mask = mask.float() if mask is not None else torch.ones_like(input_ids[:,1:]).float()
         logprobs = logprobs * mask
         if not compute_values:
             return PolicyModelOutput(
-                values=None,
-                logprobs=logprobs,
-                masks=mask
+                value=None,
+                logprobs=logprobs
             )
         if not self.value_head:
-            self.value_head = nn.Linear(self.config.hidden_size, 1).to(self.device)
+            self.value_head = nn.Linear(self.config.hidden_size, 1).to(self.current_device)
         values = self.value_head(hidden_states).squeeze(-1)[:,:-1]
         values = values * mask
+        return PolicyModelOutput(
+            value=values,
+            logprobs=logprobs
+        )
 
 class AnswerStoppingCriteria(StoppingCriteria):
     '''Stops the generation when the model outputs the first newline character after the "Answer:" tokens.'''
@@ -262,12 +210,12 @@ class AnswerStoppingCriteria(StoppingCriteria):
     def __init__(self, tokenizer, device):
         self.stop_token = tokenizer.encode("\n", add_special_tokens=False)[-1]
         self.tokenizer = tokenizer
-        self.answer_tokens = self.tokenizer.encode("Answer:", add_special_tokens=False, return_tensors="pt").squeeze().to(device)
+        self.answer_tokens = self.tokenizer.encode("\nAnswer:", add_special_tokens=False, return_tensors="pt").squeeze().to(device)[1:]
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> torch.BoolTensor:
         batch_size = input_ids.shape[0]
         finished = torch.zeros(batch_size, dtype=torch.bool).to(input_ids.device).bool()
-        contains_answer_tokens = (input_ids.unfold(1, len(self.answer_tokens), 1) == self.answer_tokens.unsqueeze(0)).all(-1).any(-1)
+        contains_answer_tokens = (input_ids[:, -32:].unfold(1, len(self.answer_tokens), 1) == self.answer_tokens.unsqueeze(0)).all(-1).any(-1)
         ends_with_new_line = input_ids[:, -1] == self.stop_token
         ends_with_eos = input_ids[:, -1] == self.tokenizer.eos_token_id
         finished = ends_with_eos | (contains_answer_tokens & ends_with_new_line)

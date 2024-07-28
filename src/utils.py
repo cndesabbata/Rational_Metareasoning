@@ -5,7 +5,7 @@ import pandas as pd
 import logging
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from typing import List
+from typing import List, Optional
 from datetime import date as d
 
 ######################## Dataset prefixes ########################
@@ -18,11 +18,20 @@ GSM8K_PREF = "Your final answer must be a number, without additional information
 
 STRATEGYQA_PREF = "Your final answer must be either 'Yes' or 'No', without additional information.\n"
 
+HOTPOTQA_PREF = "Your final answer must be composed of a few words, without additional information.\n"
+
+ARC_HARD_PREF = "Your final answer must be one of the provided options, without additional information.\n"
+
+SOCIALIQA_PREF = "Your final answer must be one of the provided options, without additional information.\n"
+
 DATASET_TO_PREF = {
     "commonsenseqa": COMMONSENSEQA_PREF,
     "proofwriter": PROOFWRITER_PREF,
     "gsm8k": GSM8K_PREF,
-    "strategyqa": STRATEGYQA_PREF
+    "strategyqa": STRATEGYQA_PREF,
+    "hotpotqa": HOTPOTQA_PREF,
+    "arc_hard": ARC_HARD_PREF,
+    "social_iqa": SOCIALIQA_PREF
 }
 
 ######################## Prompt Instructions ########################
@@ -121,3 +130,43 @@ def is_correct(model_answer: str, true_answer: str) -> int:
         true_answer = re.sub(r'\(.*?\)', '', true_answer)
         model_answer = re.sub(r'\(.*?\)', '', model_answer)
         return int(str(true_answer).strip(" \n").lower() in str(model_answer).strip(" \n").lower())
+    
+
+######################## Masked Operations ########################
+    
+def masked_mean(values: torch.Tensor, mask: torch.Tensor, axis: Optional[bool] = None) -> torch.Tensor:
+    """Compute mean of tensor with a masked values."""
+    mask = mask.float()
+    # Avoid division by zero
+    if axis is not None:
+        return (values * mask).sum(axis=axis) / torch.clamp(mask.sum(axis=axis), min=1)
+    else:
+        return (values * mask).sum() / torch.clamp(mask.sum(), min=1)
+
+def masked_var(values: torch.Tensor, mask: torch.Tensor, unbiased: bool = True) -> torch.Tensor:
+    """Compute variance of tensor with masked values."""
+    mean = masked_mean(values, mask)
+    centered_values = values - mean
+    variance = masked_mean(centered_values**2, mask)
+    if unbiased:
+        mask_sum = mask.sum()
+        if mask_sum == 0:
+            raise ValueError(
+                "The sum of the mask is zero, which can happen when `mini_batch_size=1`;"
+                "try increase the `mini_batch_size` or `gradient_accumulation_steps`"
+            )
+        bessel_correction = mask_sum / (mask_sum - 1)
+        variance = variance * bessel_correction
+    return variance
+
+def clip_by_value(x: torch.Tensor, tensor_min: float, tensor_max: float) -> torch.Tensor:
+    clipped = torch.max(torch.min(x, tensor_max), tensor_min)
+    return clipped
+
+def masked_whiten(values: torch.Tensor, mask: torch.Tensor, shift_mean: bool = True) -> torch.Tensor:
+    """Whiten values with masked values."""
+    mean, var = masked_mean(values, mask), masked_var(values, mask)
+    whitened = (values - mean) * torch.rsqrt(var + 1e-8)
+    if not shift_mean:
+        whitened += mean
+    return whitened
