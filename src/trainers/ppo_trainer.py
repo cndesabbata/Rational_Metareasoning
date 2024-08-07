@@ -213,7 +213,7 @@ class PPOTrainer(RLTrainer):
         new_dataframe = pd.DataFrame(new_dataset)
         if not self.force_direct:
             new_dataframe = new_dataframe[new_dataframe['response'] != ""]
-        new_dataset = Dataset.from_pandas(new_dataframe)
+        new_dataset = Dataset.from_pandas(new_dataframe, preserve_index=False)
         return new_dataset
 
     def compute_scores(self, batch_data: Dict[str, str]):
@@ -321,6 +321,7 @@ class PPOTrainer(RLTrainer):
                         self.writer.add_scalar('train/average_length', average_length, step)
                         self.writer.add_scalar('train/average_reward', average_reward, step)
                     self.training_losses[step] = loss
+        self.validation(step, test=True)
                 
     
         if self.args.log_with == "wandb":

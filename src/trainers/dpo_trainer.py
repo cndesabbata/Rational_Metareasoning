@@ -204,7 +204,7 @@ class DPOTrainer(RLTrainer):
         new_columns = ['_id', 'question', 'answer', 'thought_chosen', 'thought_rejected', 'response_chosen', 'response_rejected', 'dataset', 'reward_chosen', 'reward_rejected']
         new_dataframe = joined[new_columns]
         new_dataframe = pd.concat([chosen, rejected]).sort_values(by='_id', ascending=True)
-        new_dataset = Dataset.from_pandas(new_dataframe)
+        new_dataset = Dataset.from_pandas(new_dataframe, preserve_index=False)
         return new_dataset
 
     def compute_rewards(self, batch_data: Dict[str, str]):
@@ -230,7 +230,7 @@ class DPOTrainer(RLTrainer):
             dataset = self.load_dataset(new_path)
             df = dataset.to_pandas()
             df = df.sample(frac=1).reset_index(drop=True)
-            dataset = Dataset.from_pandas(df)
+            dataset = Dataset.from_pandas(df, preserve_index=False)
             self.train_dataset = dataset
             self.train_dataloader = self.prepare_dataloader(dataset, self.data_collator, batch_size=self.args.batch_size)
             return
@@ -259,7 +259,7 @@ class DPOTrainer(RLTrainer):
         save_to(df, new_path)
         ### Set training dataset
         df = df.sample(frac=1).reset_index(drop=True)
-        self.train_dataset = Dataset.from_pandas(df)
+        self.train_dataset = Dataset.from_pandas(df, preserve_index=False)
         self.train_dataloader = self.prepare_dataloader(new_dataset, self.data_collator, batch_size=self.args.batch_size)
 
     def unroll_batch(self, batch: Dict[str, Union[str, torch.Tensor]]) -> Dict[str, Union[str, torch.Tensor]]:
@@ -320,6 +320,7 @@ class DPOTrainer(RLTrainer):
                         self.writer.add_scalar('train/average_length', average_length, step)
                         self.writer.add_scalar('train/average_reward', average_reward, step)
                     self.training_losses[step] = loss
+        self.validation(step, test=True)
                 
     
         if self.args.log_with == "wandb":

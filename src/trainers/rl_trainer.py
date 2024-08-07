@@ -5,7 +5,9 @@ import torch.nn.functional as F
 import wandb
 import os
 import pandas as pd
+import gc
 from datetime import datetime
+from hydra.utils import instantiate
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import date
@@ -148,15 +150,14 @@ class RLTrainer():
         print(f"Datasets loaded: {len(self.train_dataset)} training samples, {len(self.eval_dataset)} evaluation samples, {len(self.test_dataset)} test samples")
         data_collator = CustomRLDataCollator(tokenizer=self.tokenizer, mlm=False)
         self.train_dataloader = self.prepare_dataloader(self.train_dataset, data_collator, batch_size=self.args.batch_size)
-        self.eval_dataloader = self.prepare_dataloader(self.eval_dataset, data_collator, batch_size=self.args.batch_size) if self.eval_dataset else None
-        self.test_dataloader = self.prepare_dataloader(self.test_dataset, data_collator, batch_size=self.args.batch_size) if self.test_dataset else None
+        self.eval_dataloader = self.prepare_dataloader(self.eval_dataset, data_collator, batch_size=self.args.mini_batch_size) if self.eval_dataset else None
+        self.test_dataloader = self.prepare_dataloader(self.test_dataset, data_collator, batch_size=self.args.mini_batch_size) if self.test_dataset else None
+        print(f"Dataloaders prepared: {len(self.train_dataloader)} training batches, {len(self.eval_dataloader)} evaluation batches, {len(self.test_dataloader)} test batches")
         self.data_collator = data_collator
         ### Optimizer and scheduler
-        self.optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
-        self.total_steps = len(self.train_dataset) * args.epochs * args.rl_epochs // args.mini_batch_size
-        self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=int(args.warmup_ratio * self.total_steps), num_training_steps=self.total_steps)
+        self.set_optimizer()
         date_str = date.today().strftime("%m%d")
-        self.output_path = self.args.output_dir + self.policy_model.model_name.split("/")[-1] + "_" + date_str + self.args.output_suffix
+        self.output_path = self.args.output_dir + self.policy_model.model_name.split("/")[-1] + "_" + date_str + self.args.output_suffix + "_epoch_0"
         if self.args.log_with == "wandb":
             run_name = datetime.now().strftime("%m%d_%H%M%S")
             wandb_dir = self.args.output_dir
@@ -182,6 +183,27 @@ class RLTrainer():
         self.reward_model.logger = logger
         self.policy_model.logger = logger
 
+    def set_optimizer(self):
+        self.optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, self.policy_model.parameters()), lr=self.args.learning_rate)
+        self.total_steps = len(self.train_dataset) // self.args.mini_batch_size
+        self.scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=int(self.args.warmup_ratio * self.total_steps), num_training_steps=self.total_steps)
+        
+    def reload_policy_model(self):
+        del self.policy_model
+        del self.reward_model
+        gc.collect()
+        self.policy_model = instantiate(self.model_config)
+        self.policy_model.logger = self.logger
+        self.reward_model = RewardModel(
+            model=self.policy_model,
+            voc_gamma=self.args.voc_gamma,
+            logger=self.logger,
+            sample_size=self.args.rollout_sample_size,
+            device=self.current_device,
+            tokenizer=self.tokenizer)
+        self.set_optimizer()
+        self.policy_model.few_shot_dataset = None
+
     def load_dataset(self, path: str):
         '''Load dataset from path
         Args:
@@ -190,7 +212,8 @@ class RLTrainer():
             dataset (Dataset): Dataset object
         '''
         try:
-            dataset = Dataset.from_pandas(pd.read_json(path))
+            df = pd.read_json(path)
+            dataset = Dataset.from_pandas(df, preserve_index=False)
         except:
             # print current path
             print(os.getcwd())
@@ -211,7 +234,7 @@ class RLTrainer():
             dataset,
             batch_size=batch_size,
             collate_fn=data_collator,
-            shuffle=False,
+            shuffle=True,
             drop_last=True
         )
         return dataloader
@@ -295,9 +318,10 @@ class RLTrainer():
 
     def validation(self, step, test=False):
         '''Validation step'''
-        if not self.eval_dataloader:
+        if self.eval_dataloader is None:
+            self.logger.info("No evaluation dataset provided")
             return
-        print(f"Step {step}: Validation | {step == 0}")
+        self.logger.info(f"Step {step}: Validation | {step == 0}")
         if (step % self.args.eval_steps != 0) or (step == 0):
             return
         self.policy_model.generation_args = {
@@ -308,50 +332,44 @@ class RLTrainer():
         losses = []
         accuracies = []
         lengths = []
-        responses = []
-        thoughts = []
+        new_dataset = {}
         few_shot_dataset = self.policy_model.few_shot_dataset
         self.policy_model.few_shot_dataset = None
         dataloader = self.test_dataloader if test else self.eval_dataloader
+        self.logger.info(f"Running evaluation on {len(dataloader.dataset)} samples")
         for i, batch in enumerate(tqdm(dataloader)):
             with torch.no_grad():
                 ### Generate thoughts
+                ids = batch['_id']
                 prompts = batch['question']
                 answers = batch['answer']
                 datasets = batch['dataset'] if "dataset" in batch else None
-                step_size = self.args.mini_batch_size
-                for i in range(0, len(prompts), step_size):
-                    j = min(i+step_size, len(prompts))
-                    mini_batch_prompts = [trim(p) for p in prompts[i:j]]
-                    mini_batch_answers = [trim(c) for c in answers[i:j]]
-                    mini_batch_dataset = datasets[i:j] if datasets is not None else None
-                    thoughts, responses = self.policy_model.run(mini_batch_prompts, log=True, datasets=mini_batch_dataset)
-                    for prompt, thought, answer, response in zip(mini_batch_prompts, thoughts, mini_batch_answers, responses):
-                        # input is prompt + thought + response, labels is response
-                        prompt = self.bos_token + self.user_format.format(user=prompt)
-                        thought = self.thought_format.format(thought=thought) if thought else ""
-                        response = self.assistant_format.format(assistant=response) + self.eos_token
-                        prompt_ids = self.tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False).squeeze(0)
-                        thought_ids = self.tokenizer.encode(thought, return_tensors="pt", add_special_tokens=False).squeeze(0)
-                        response_ids = self.tokenizer.encode(response, return_tensors="pt", add_special_tokens=False).squeeze(0)
-                        input_ids = torch.cat([prompt_ids, thought_ids, response_ids], dim=0).to(self.current_device).unsqueeze(0).long()
-                        attention_mask = torch.cat([torch.ones_like(prompt_ids), torch.ones_like(thought_ids), torch.ones_like(response_ids)], dim=0).to(self.current_device).unsqueeze(0).long()
-                        label = torch.cat([-100*torch.ones_like(prompt_ids), -100*torch.ones_like(thought_ids), response_ids], dim=0).to(self.current_device).unsqueeze(0).long()
-                        with torch.no_grad():
-                            losses.append(self.policy_model.forward(input_ids=input_ids, attention_mask=attention_mask, labels=label).loss.item())
-                        lengths.append(thought_ids.shape[-1])
-                        accuracies.append(is_correct(response, answer))
-                        responses.append(response)
-                        thoughts.append(thought)
+                thoughts, responses = self.policy_model.run(prompts, log=True, datasets=datasets)
+                datasets = datasets if datasets else [""] * len(prompts)
+                for _id, prompt, thought, answer, response, dataset in zip(ids, prompts, thoughts, answers, responses, datasets):
+                    prompt = self.bos_token + self.user_format.format(user=prompt)
+                    thought = self.thought_format.format(thought=thought) if thought else ""
+                    response = self.assistant_format.format(assistant=response) + self.eos_token
+                    prompt_ids = self.tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False).squeeze(0)
+                    thought_ids = self.tokenizer.encode(thought, return_tensors="pt", add_special_tokens=False).squeeze(0)
+                    response_ids = self.tokenizer.encode(response, return_tensors="pt", add_special_tokens=False).squeeze(0)
+                    input_ids = torch.cat([prompt_ids, thought_ids, response_ids], dim=0).to(self.current_device).unsqueeze(0).long()
+                    attention_mask = torch.cat([torch.ones_like(prompt_ids), torch.ones_like(thought_ids), torch.ones_like(response_ids)], dim=0).to(self.current_device).unsqueeze(0).long()
+                    label = torch.cat([-100*torch.ones_like(prompt_ids), -100*torch.ones_like(thought_ids), response_ids], dim=0).to(self.current_device).unsqueeze(0).long()
+                    with torch.no_grad():
+                        losses.append(self.policy_model.forward(input_ids=input_ids, attention_mask=attention_mask, labels=label).loss.item())
+                    lengths.append(thought_ids.shape[-1])
+                    accuracies.append(is_correct(response, answer))
+                    new_dataset["_id"] = new_dataset.get("_id", []) + [_id]
+                    new_dataset["question"] = new_dataset.get("question", []) + [prompt]
+                    new_dataset["answer"] = new_dataset.get("answer", []) + [answer]
+                    new_dataset["response"] = new_dataset.get("response", []) + [response]
+                    new_dataset["thought"] = new_dataset.get("thought", []) + [thought]
+                    new_dataset["dataset"] = new_dataset.get("dataset", []) + [dataset]
+                    new_dataset["length"] = new_dataset.get("length", []) + [thought_ids.shape[-1]]
+                    new_dataset["loss"] = new_dataset.get("loss", []) + [losses[-1]]
         if test:
-            result_df = pd.DataFrame({
-                "_id": dataloader.dataset["_id"],  
-                "question": dataloader.dataset["question"],
-                "answer": dataloader.dataset["answer"],
-                "response": dataloader.dataset["response"],
-                "thought": thoughts,
-                "loss": losses,
-            })
+            result_df = pd.DataFrame(new_dataset)
             save_to(result_df, f"{self.output_path}/results_{step}.json")
         self.policy_model.few_shot_dataset = few_shot_dataset
         loss = torch.tensor(losses).float().mean().item()
@@ -369,7 +387,8 @@ class RLTrainer():
                     'eval/std_length': lengths_std,
                     'eval/accuracy': accuracy,
                 }
-                self.logger.info(f"Logging metrics: {stats}")
+                stats_to_print = {k: f"{v:.3f}" for k, v in stats.items()}
+                self.logger.info(f"Logging metrics: {stats_to_print}")
                 wandb.log(stats)
             elif self.args.log_with == "tensorboard":
                 self.writer.add_scalar('eval/loss', loss, step)
@@ -396,10 +415,6 @@ class RLTrainer():
             'scheduler': self.scheduler.state_dict(),
             'step': step,
         }, f'{self.args.output_dir}/{"checkpoint_" + str(step)}.pth')
-        for f in os.listdir(self.args.output_dir):
-            if f.startswith("checkpoint_"):
-                checkpoint = torch.load(os.path.join(self.args.output_dir, f))
-                self.policy_model.load_state_dict(checkpoint["policy_model"])
         self.logger.info(f'[reinforce_step {step}] model checkpoint saved')
     
 

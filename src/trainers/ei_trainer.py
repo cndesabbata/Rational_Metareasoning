@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import gc
+from hydra.utils import instantiate
 from trainers.rl_trainer import RLTrainer, RLTrainingArguments
 from torch.nn.utils import clip_grad_norm_
 import os
@@ -121,12 +122,13 @@ class EITrainer(RLTrainer):
         }
         bs, step_size = len(prompts), self.args.mini_batch_size*2
         progress_bar = tqdm(total=bs*sample_size//step_size)
-        for _ in range(sample_size):
+        for j in range(sample_size):
+            use_hint = j == 0 and hint
             for start_i in range(0, bs, step_size):
                 end_i = min(start_i + step_size, bs)
-                input_str = self.policy_model.format_prompts(prompts[start_i:end_i], answers[start_i:end_i], hint=hint, datasets=datasets[start_i:end_i] if datasets else None)
+                input_str = self.policy_model.format_prompts(prompts[start_i:end_i], answers[start_i:end_i], hint=use_hint, datasets=datasets[start_i:end_i] if datasets else None)
                 thoughts_batch, responses_batch = self.policy_model.run(input_str, format=False, log=False)
-                datasets_to_add = (datasets[start_i:end_i] if datasets else ["" for _ in range(end_i - start_i)]) * (sample_size + 1)
+                datasets_to_add = (datasets[start_i:end_i] if datasets else ["" for _ in range(end_i - start_i)])
                 new_dataset['_id'] = new_dataset.get('_id', []) + ids[start_i:end_i]
                 new_dataset['question'] = new_dataset.get('question', []) + prompts[start_i:end_i]
                 new_dataset['response'] = new_dataset.get('response', []) + responses_batch 
@@ -146,10 +148,14 @@ class EITrainer(RLTrainer):
         columns_to_keep = ['_id', 'question', 'answer', 'response', 'thought', 'dataset', 'reward']
         new_dataset = {k: list(v) if isinstance(v, torch.Tensor) else v for k, v in new_dataset.items() if k in columns_to_keep}
         new_dataframe = pd.DataFrame(new_dataset)
+        ### Keep only questions with at least one correct answer
+        new_dataframe['correct'] = new_dataframe.apply(lambda x: is_correct(x['response'], x['answer']), axis=1)
+        correct_df = new_dataframe[new_dataframe['correct'] > 0]['_id'].unique()
+        new_dataframe = new_dataframe[new_dataframe['_id'].isin(correct_df)]
         if not self.force_direct:
             new_dataframe = new_dataframe[new_dataframe['response'] != ""]
         new_dataframe = new_dataframe.sort_values(by='reward', ascending=False).drop_duplicates(subset=['_id'], keep='first')
-        new_dataset = Dataset.from_pandas(new_dataframe)
+        new_dataset = Dataset.from_pandas(new_dataframe, preserve_index=False)
         return new_dataset
 
     def compute_rewards(self, batch_data: Dict[str, str]):
@@ -170,9 +176,12 @@ class EITrainer(RLTrainer):
     
     def generate_data(self, epoch: int = 0):
         ### Rollouts from policy
+        columns = ["_id", "question", "answer", "thought", "response", "dataset",  "reward" ]
         try:
-            new_path = self.args.data_dir + f"/train_epoch_{epoch}.json"
+            new_path = self.args.data_dir + f"/train_{self.policy_model.model_name}_{self.type}_epoch_{epoch}.json"
             dataset = self.load_dataset(new_path)
+            df = dataset.to_pandas().sample(frac=1)[columns]
+            dataset = Dataset.from_pandas(df, preserve_index=False)
             self.train_dataset = dataset
             self.train_dataloader = self.prepare_dataloader(dataset, self.data_collator, batch_size=self.args.batch_size)
             return
@@ -181,25 +190,33 @@ class EITrainer(RLTrainer):
         self.logger.info(f"Sampling rollouts from policy model")
         self.policy_model.eval()
         new_dataset = {}
-        use_hint = False
+        use_hint = True
         ### Iterate over train dataloader to generate data
-        self.logger.info(f"Iterating over dataloader of length: {len(self.train_dataloader)}")
-        for step, batch in enumerate(tqdm(self.train_dataloader)):
-            self.logger.info(f"Running step {step}/{len(self.train_dataloader)}")
-            if step >= len(self.train_dataloader)//2:
-                use_hint = False
-                self.policy_model.few_shot_dataset = None
+        df = self.train_dataset.to_pandas()
+        df = df.sort_values(by='_id').drop_duplicates(subset=['_id'], keep='first')[['_id', 'question', 'answer', 'dataset']]
+        train_dataset = Dataset.from_pandas(df, preserve_index=False)
+        train_dataloader = self.prepare_dataloader(train_dataset, self.data_collator, batch_size=self.args.batch_size)
+        self.logger.info(f"Iterating over dataloader of length: {len(train_dataloader)}")
+        for step, batch in enumerate(tqdm(train_dataloader)):
+            self.logger.info(f"Running step {step}/{len(train_dataloader)}")
+            # if step >= len(self.train_dataloader)//2:
+            #     use_hint = False
+            #     self.policy_model.few_shot_dataset = None
             batch = self.sample_rollouts(batch, hint=use_hint).to_dict()
             for k, v in batch.items():
                 new_dataset[k] = new_dataset.get(k, []) + v
         new_dataset = Dataset.from_dict(new_dataset)
         ### Save dataset
-        new_path = self.args.data_dir + f"/train_epoch_{epoch}.json"
+        new_path = self.args.data_dir + f"/train_{self.policy_model.model_name}_{self.type}_epoch_{epoch}.json"
         os.makedirs(self.args.data_dir, exist_ok=True)
-        df = new_dataset.to_pandas()[["_id", "question", "answer", "thought", "response", "dataset",  "reward" ]]
+        df = new_dataset.to_pandas()[columns]
+        if epoch > 0:
+            old_dataset = self.train_dataset.to_pandas()
+            df = pd.concat([df, old_dataset]).sort_values(by='_id')[columns]
         save_to(df, new_path)
         ### Set training dataset
-        self.train_dataset = new_dataset
+        df = df.sample(frac=1)
+        self.train_dataset = Dataset.from_pandas(df, preserve_index=False)
         self.train_dataloader = self.prepare_dataloader(new_dataset, self.data_collator, batch_size=self.args.batch_size)
 
     def train(self):
@@ -207,6 +224,11 @@ class EITrainer(RLTrainer):
         for epoch in range(self.args.start_epoch, self.args.epochs):
             self.logger.info(f"Running epoch {epoch}/{self.args.epochs}")
             self.generate_data(epoch)
+            if epoch > 0 and self.model_config is not None:
+                self.logger.info("Reloading policy model")
+                self.reload_policy_model()
+                output_suffix = f"_epoch_{epoch}" if epoch != self.args.epochs - 1 else ""
+                self.output_path = "_".join(self.output_path.split("_")[:-2]) + output_suffix
             total_steps = len(self.train_dataloader)
             for step, batch in enumerate(tqdm(self.train_dataloader)):
                 self.logger.info(f"Running step {step}/{total_steps}")
@@ -246,7 +268,7 @@ class EITrainer(RLTrainer):
                         self.writer.add_scalar('train/average_length', average_length, step)
                         self.writer.add_scalar('train/average_reward', average_reward, step)
                     self.training_losses[step] = loss
-                
+            self.validation(step, test=True)
     
         if self.args.log_with == "wandb":
             wandb.finish()

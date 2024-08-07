@@ -41,7 +41,8 @@ class RewardModel():
         torch.set_printoptions(precision=4, sci_mode=False)
         self.logger.info(f"Scores: {target_probabilities.view(-1, self.sample_size)}")
         ### Compute utility score (probability increment)
-        scores = (target_probabilities.view(-1, self.sample_size) - target_probabilities.view(-1, self.sample_size)[:, -1].unsqueeze(1)).view(-1)
+        # scores = (target_probabilities.view(-1, self.sample_size) - target_probabilities.view(-1, self.sample_size)[:, -1].unsqueeze(1)).view(-1)
+        scores = torch.log((target_probabilities.view(-1, self.sample_size) + 1e-3) / (target_probabilities.view(-1, self.sample_size)[:, -1].unsqueeze(1) + 1e-3)).view(-1)
         self.logger.info(f"Scores: {scores.view(-1, self.sample_size)}")
         ### Compute penalties 
         lengths = thoughts_mask.sum(dim=1).float().view(-1, self.sample_size)
@@ -49,13 +50,13 @@ class RewardModel():
         ### Compute rewards
         rewards = scores - penalties
         ### Log results
-        self.logger.info(f"Lenghts: Mean {lengths.mean():.4f}, Std {lengths.std():.4f}, Max {lengths.max():.4f}, Min {lengths.min():.4f}")
-        self.logger.info(f"Penalties: Mean {penalties.mean():.4f}, Std {penalties.std():.4f}, Max {penalties.max():.4f}, Min {penalties.min():.4f}")
-        self.logger.info(f"Scores: Mean {scores.mean():.4f}, Std {scores.std():.4f}, Max {scores.max():.4f}, Min {scores.min():.4f}")
-        decoded_inputs = [self.tokenizer.decode(i, skip_special_tokens=False) for i in input_ids]
-        zipped_results = list(zip(decoded_inputs, scores.view(-1), penalties.view(-1), rewards.view(-1)))
-        for i, (decoded_input, score, penalty, score_penalized) in enumerate(zipped_results):
-            self.logger.info(f"Input: {decoded_input}\nScore: {score:.4f}, Penalty: {penalty:.4f}, Score penalized: {score_penalized:.4f}\n")
+        # self.logger.info(f"Lenghts: Mean {lengths.mean():.4f}, Std {lengths.std():.4f}, Max {lengths.max():.4f}, Min {lengths.min():.4f}")
+        # self.logger.info(f"Penalties: Mean {penalties.mean():.4f}, Std {penalties.std():.4f}, Max {penalties.max():.4f}, Min {penalties.min():.4f}")
+        # self.logger.info(f"Scores: Mean {scores.mean():.4f}, Std {scores.std():.4f}, Max {scores.max():.4f}, Min {scores.min():.4f}")
+        # decoded_inputs = [self.tokenizer.decode(i, skip_special_tokens=False) for i in input_ids]
+        # zipped_results = list(zip(decoded_inputs, scores.view(-1), penalties.view(-1), rewards.view(-1)))
+        # for i, (decoded_input, score, penalty, score_penalized) in enumerate(zipped_results):
+        #     self.logger.info(f"Input: {decoded_input}\nScore: {score:.4f}, Penalty: {penalty:.4f}, Score penalized: {score_penalized:.4f}\n")
         ### Return rewards
         return rewards
     
@@ -78,8 +79,15 @@ class RewardModel():
             )
             logits = outputs.logits[:, :-1, :].contiguous()
         ### Gather logprobs
+        # decoded_input_ids = [model.tokenizer.batch_decode(i[mask.bool()][2:-2], skip_special_tokens=False) for i, mask in zip(input_ids, target_mask)]
         target = torch.where(target_mask==0, torch.ones_like(input_ids).to(model.device)*model.tokenizer.pad_token_id, input_ids)[:, 1:]
         target_mask = target_mask[:, 1:]
         logprobs = logprobs_from_logits(logits, target)
-        probabilities = torch.tensor([torch.exp(lp[m.bool()][2:-3]).prod() for lp, m in zip(logprobs, target_mask)]).to(model.device)
+        # probs_to_print = [torch.exp(lp[m.bool()][2:-2]) for lp, m in zip(logprobs, target_mask)]
+        if "phi-2" == model.model_name:
+            probabilities = torch.tensor([torch.exp(lp[m.bool()][2:-2]).prod() for lp, m in zip(logprobs, target_mask)]).to(model.device)
+            # for i, (decoded_input, probs) in enumerate(zip(decoded_input_ids, probs_to_print)):
+            #     model.logger.info(f"Input: {decoded_input}\nProb: {probs}\n")
+        else:
+            probabilities = torch.tensor([torch.exp(lp[m.bool()][2:-3]).prod() for lp, m in zip(logprobs, target_mask)]).to(model.device)
         return probabilities

@@ -10,6 +10,7 @@ from transformers import (
     StoppingCriteriaList,
     LlamaForCausalLM,
     PhiForCausalLM,
+    MistralForCausalLM,
     GemmaForCausalLM,
     Phi3ForCausalLM,
     AutoModelForCausalLM,
@@ -80,6 +81,7 @@ class AgentPretrainedModel:
         ### Format the prompts
         for i, (q, c, pref, d) in enumerate(zip(questions, completions, prefixes, datasets)):
             hint_str = f"\n(The correct answer is {c})" if hint else ""
+            d = d.split("_")[0] if "mmlu" in d else d
             data_pref = DATASET_TO_PREF.get(d, "")
             question = self.user_format.format(user=self.instruction + data_pref + q + hint_str)
             formatted_chat = self.tokenizer.bos_token + pref + question
@@ -113,7 +115,7 @@ class AgentPretrainedModel:
             for i, (questions_i, thoughts_i, answers_i) in enumerate(zip(questions, thoughts, answers)):
                 hint_str = f"\n(The correct answer is {answers_i})" if use_hint else ""
                 question = self.user_format.format(user=self.instruction + data_pref + questions_i + hint_str)
-                thought = self.thought_format.format(thought=thoughts_i) if self.inference_mode == "cot" else ""
+                thought = self.thought_format.format(thought=thoughts_i) if self.inference_mode != "direct" else ""
                 answer = self.assistant_format.format(assistant=answers_i)
                 chat = question + "\n" + thought + answer + "\n"
                 few_shots.append(chat)
@@ -227,13 +229,19 @@ class LlamaAgent(AgentPretrainedModel, LlamaForCausalLM):
         AgentPretrainedModel.__init__(self, config)
         self.vocab_size = self.config.vocab_size
         self.pretrained_vocab_size = 32000
+        self.user_format = "<|start_header_id|>user<|end_header_id|>\n\n{user}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        self.assistant_format = "Answer: {assistant} \n"
+        self.thought_format = "Thought: {thought}\n"
 
-class PhiAgent(AgentPretrainedModel, PhiForCausalLM):
+class MistralAgent(AgentPretrainedModel, MistralForCausalLM):
 
     def __init__(self, config: Dict[str, Any]):
         AgentPretrainedModel.__init__(self, config)
         self.vocab_size = self.config.vocab_size
         self.pretrained_vocab_size = 50295
+        self.user_format = "[INST] {user}\n[/INST]"
+        self.assistant_format = "Answer: {assistant} \n"
+        self.thought_format = "Thought: {thought}\n"
 
 class Phi3Agent(AgentPretrainedModel, Phi3ForCausalLM):
 
@@ -251,6 +259,16 @@ class GemmaAgent(AgentPretrainedModel, GemmaForCausalLM):
         AgentPretrainedModel.__init__(self, config)
         self.vocab_size = self.config.vocab_size
         self.pretrained_vocab_size = 256000
+        self.user_format = "<start_of_turn>user\n{user}\n<end_of_turn>\n<start_of_turn>model"
+        self.assistant_format = "Answer: {assistant}\n<end_of_turn>"
+        self.thought_format = "Thought: {thought}\n"
+
+class Phi2Agent(AgentPretrainedModel, PhiForCausalLM):
+
+    def __init__(self, config: Dict[str, Any]):
+        AgentPretrainedModel.__init__(self, config)
+        self.vocab_size = self.config.vocab_size
+        self.pretrained_vocab_size = 32064
         self.user_format = "User: {user}\n\n"
-        self.assistant_format = "Answer: {assistant}\n"
+        self.assistant_format = "Answer: {assistant}\n\n"
         self.thought_format = "Thought: {thought}\n"

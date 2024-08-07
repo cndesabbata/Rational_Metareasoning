@@ -10,9 +10,9 @@ from datetime import date as d
 
 ######################## Dataset prefixes ########################
 
-COMMONSENSEQA_PREF = "Your final answer must be one of the provided options, without additional information.\n"
+COMMONSENSEQA_PREF = "Your final answer must be one of the provided options (written in full), without additional information.\n"
 
-PROOFWRITER_PREF = "Your final answer must be a one of True/False/Unknown, without additional information.\n"
+FOLIO_PREF = "Your final answer must be a one of True/False/Unknown, without additional information.\n"
 
 GSM8K_PREF = "Your final answer must be a number, without additional information.\n"
 
@@ -20,18 +20,21 @@ STRATEGYQA_PREF = "Your final answer must be either 'Yes' or 'No', without addit
 
 HOTPOTQA_PREF = "Your final answer must be composed of a few words, without additional information.\n"
 
-ARC_HARD_PREF = "Your final answer must be one of the provided options, without additional information.\n"
+ARC_HARD_PREF = "Your final answer must be one of the provided options (written in full), without additional information.\n"
 
-SOCIALIQA_PREF = "Your final answer must be one of the provided options, without additional information.\n"
+SOCIALIQA_PREF = "Your final answer must be one of the provided options (written in full), without additional information.\n"
+
+MMLU_PREF = "Your final answer must be one of the provided options (written in full), without additional information.\n"
 
 DATASET_TO_PREF = {
     "commonsenseqa": COMMONSENSEQA_PREF,
-    "proofwriter": PROOFWRITER_PREF,
+    "folio": FOLIO_PREF,
     "gsm8k": GSM8K_PREF,
     "strategyqa": STRATEGYQA_PREF,
     "hotpotqa": HOTPOTQA_PREF,
     "arc_hard": ARC_HARD_PREF,
-    "social_iqa": SOCIALIQA_PREF
+    "social_iqa": SOCIALIQA_PREF,
+    "mmlu": MMLU_PREF
 }
 
 ######################## Prompt Instructions ########################
@@ -40,7 +43,7 @@ DIRECT_INSTRUCTION = "Answer the following question directly. Do not include any
 
 COT_INSTRUCTION = "Answer the following question in a thoughtful way, thinking step by step to get to the solution. End your response with 'Answer: ' followed by your final answer.\n"
 
-RMR_INSTRUCTION = "Answer the following question in a thoughtful way. You can think step by step about the problem, if needed. Otherwise, you can provide a direct answer. In either case, end your response with 'Answer: ' followed by your final answer.\n"
+RMR_INSTRUCTION = "Answer the following question in a thoughtful way. You can think step by step about the problem, if needed (if not, you can answer directly). End your response with 'Answer: ' followed by your final answer.\n"
 
 MODE_TO_INSTRUCTION = {
     "direct": DIRECT_INSTRUCTION,
@@ -170,3 +173,110 @@ def masked_whiten(values: torch.Tensor, mask: torch.Tensor, shift_mean: bool = T
     if not shift_mean:
         whitened += mean
     return whitened
+
+######################## Plot Scores ########################
+
+def print_scores(path, subset: str = None):
+    df = pd.read_json(path)
+    if subset:
+        df = df[df['dataset'] == subset]
+    df['response'] = df['response'].apply(lambda x: x.split("Answer:")[-1].strip())
+    df['score'] = df.apply(lambda x: is_correct(x['response'], x['answer']), axis=1)
+    print("Accuracy:", df['score'].mean())
+    if not subset:
+        print("Per dataset accuracy:" + f"\n{df.groupby('dataset')['score'].mean()}")
+    tokenizer = AutoTokenizer.from_pretrained("/scratch/gpfs/cd2853/models/phi-2")
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    if 'few_shot' in path:
+        few_shot_path = "/home/cd2853/rational_metareasoning/data/few_shot_prompts.json"
+        few_shot_dataset = pd.read_json(few_shot_path)
+        if 'direct' in path:
+            few_shot_dataset['full_example'] = few_shot_dataset.apply(lambda x: f"{x['user']}\nAnswer: {x['answer']}", axis=1)
+        else:
+            few_shot_dataset['full_example'] = few_shot_dataset.apply(lambda x: f"{x['user']}\n{x['thought']}\nAnswer: {x['answer']}", axis=1)
+        few_shot_dataset['tokenized_example'] = few_shot_dataset['full_example'].apply(lambda x: tokenizer(x, return_tensors="pt", padding=True, truncation=True)["input_ids"])
+        few_shot_dataset['input_length'] = few_shot_dataset['tokenized_example'].apply(lambda x: x.shape[1])
+        few_shot_dataset = few_shot_dataset[['dataset', 'input_length']].groupby('dataset').sum()
+        df = pd.merge(df, few_shot_dataset, on='dataset')
+    else:
+        df['tokenized_input'] = df['question'].apply(lambda x: tokenizer(x, return_tensors="pt", padding=True, truncation=True)["input_ids"])
+        df['input_length'] = df['tokenized_input'].apply(lambda x: x.shape[1])
+    print("\nAverage length of inputs:", df['input_length'].mean())
+    if not subset:
+        print("Per dataset average length of inputs:" + f"\n{df.groupby('dataset')['input_length'].mean()}")
+        print("Standard deviation of length of inputs:", df['input_length'].std())
+    df['tokenized_thought'] = df['thought'].apply(lambda x: tokenizer(x, return_tensors="pt", padding=True, truncation=True)["input_ids"])
+    df['output_length'] = df['tokenized_thought'].apply(lambda x: x.shape[1])
+    print("\nAverage length of thoughts:", df['output_length'].mean())
+    if not subset:
+        print("Per dataset average length of thoughts:" + f"\n{df.groupby('dataset')['output_length'].mean()}")
+        print("Standard deviation of length of thoughts:", df['output_length'].std())
+
+######################## Latex template table ########################
+        
+
+# \begin{tabular}\{|c|l|c|c|c|c|c|\}
+# \hline
+# \multirow{2}{*}{\textbf{Model}} & \multirow{2}{*}{\textbf{Setting}} & \multicolumn{3}{c|}{\textbf{Performance Metrics}} \\ \cline{3-5} 
+#  &  & Avg. Input Length & Avg. Output Length & Avg. Accuracy \\ \hline
+# \multirow{5}{*}
+# {\textbf{Phi2}}
+#  & Direct Few Shot & 278.0 & 0.0 & 63.0\% \\ \cline{2-5} 
+#  & CoT Few Shot & 735.0 & 75.2 & 57.2\% \\ \cline{2-5} 
+#  & RMR Few Shot & 735.0 & 79.5 & 58.8\% \\ \cline{2-5}
+#  & STaR & 44.71 & 70.3 & 60.0\% \\ \cline{2-5} 
+#  & RMR Training & 44.71 & - & -\% \\ \hline
+# \end{tabular}
+# """
+
+table_template = """
+\\begin{{tabular}}{{|c|l|c|c|c|c|c|}}
+\\hline
+\\multirow{{2}}{{*}}{{\\textbf{{Model}}}} & \\multirow{{2}}{{*}}{{\\textbf{{Setting}}}} & \\multicolumn{{3}}{{c|}}{{\\textbf{{Performance Metrics}}}} \\\\ \\cline{{3-5}} 
+ &  & Avg. Input Length & Avg. Output Length & Avg. Accuracy \\\\ \\hline
+\\multirow{{5}}{{*}}
+{{\\textbf{{Phi2}}}}
+ & Direct Few Shot & {direct_input} & {direct_output} & {direct_accuracy}\% \\\\ \\cline{{2-5}}
+ & CoT Few Shot & {cot_input} & {cot_output} & {cot_accuracy}\% \\\\ \\cline{{2-5}}
+ & RMR Few Shot & {rmr_input} & {rmr_output} & {rmr_accuracy}\% \\\\ \\cline{{2-5}}
+ & STaR & {star_input} & {star_output} & {star_accuracy}\% \\\\ \\cline{{2-5}}
+ & RMR Training & {rmr_training_input} & {rmr_training_output} & {rmr_training_accuracy}\% \\\\ \\hline
+\\end{{tabular}}
+"""
+
+def fill_table(dir, subset):
+    suffixes = {
+        "direct": "direct_few_shot",
+        "cot": "cot_few_shot",
+        "rmr": "rmr_few_shot",
+        "star": "0802_star_rmr",
+        "rmr_training": "0802_ei_rmr"
+    }
+    # results are {variable_name: (value, format)} to be inserted in the table
+    results = {}
+    for key, value in suffixes.items():
+        path = f"{dir}/phi-2_{value}.json"
+        df = pd.read_json(path)
+        df = df[df['dataset'] == subset]
+        df['response'] = df['response'].apply(lambda x: x.split("Answer:")[-1].strip())
+        df['score'] = df.apply(lambda x: is_correct(x['response'], x['answer']), axis=1)
+        tokenizer = AutoTokenizer.from_pretrained("/scratch/gpfs/cd2853/models/phi-2")
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        few_shot_path = "/home/cd2853/rational_metareasoning/data/few_shot_prompts.json"
+        few_shot_dataset = pd.read_json(few_shot_path)
+        if 'direct' in path:
+            few_shot_dataset['full_example'] = few_shot_dataset.apply(lambda x: f"{x['user']}\nAnswer: {x['answer']}", axis=1)
+        else:
+            few_shot_dataset['full_example'] = few_shot_dataset.apply(lambda x: f"{x['user']}\n{x['thought']}\nAnswer: {x['answer']}", axis=1)
+        few_shot_dataset['tokenized_example'] = few_shot_dataset['full_example'].apply(lambda x: tokenizer(x, return_tensors="pt", padding=True, truncation=True)["input_ids"])
+        few_shot_dataset['input_length'] = few_shot_dataset['tokenized_example'].apply(lambda x: x.shape[1])
+        few_shot_dataset = few_shot_dataset[['dataset', 'input_length']].groupby('dataset').sum()
+        df = pd.merge(df, few_shot_dataset, on='dataset')
+        df['tokenized_thought'] = df['thought'].apply(lambda x: tokenizer(x, return_tensors="pt", padding=True, truncation=True)["input_ids"])
+        df['output_length'] = df['tokenized_thought'].apply(lambda x: x.shape[1])
+        results[f"{key}_input"] = (df['input_length'].mean(), ".1f")
+        results[f"{key}_output"] = (df['output_length'].mean(), ".1f")
+        results[f"{key}_accuracy"] = (df['score'].mean() * 100, ".1f")
+    print(results)
+    return table_template.format(**{k: f"{v[0]:{v[1]}}" for k, v in results.items()})
+            
