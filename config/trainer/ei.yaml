@@ -1,0 +1,27 @@
+_target_: trainers.ei_trainer.EITrainer
+# @package _global_
+defaults:
+- /model: phi
+# - /model@ref_model: phi
+- /model@ref_model: null
+args: 
+  _target_: trainers.ei_trainer.EITrainingArguments
+  batch_size: 512
+  mini_batch_size: 16
+  learning_rate: 1e-6
+  start_step: 0
+  log_with: wandb
+  output_dir: /scratch/gpfs/cd2853/models/
+  output_suffix: "_ei"
+  rollout_sample_size: 5
+  voc_gamma: 1e-2
+  logging_steps: 1
+  eval_steps: 1
+  save_steps: 1
+  warmup_ratio: 0.01
+  max_grad_norm: 1.0
+train_dataset_path: /home/cd2853/rational_metareasoning/data/filtered/train_all.json
+eval_dataset_path: /home/cd2853/rational_metareasoning/data/filtered/val_all.json
+test_dataset_path: /home/cd2853/rational_metareasoning/data/filtered/test_all.json
+type: ei
+force_direct: true

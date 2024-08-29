@@ -1,0 +1,24 @@
+_target_: trainers.star_trainer.StarTrainer
+# @package _global_
+defaults:
+- /model: phi
+# - /model@ref_model: phi
+- /model@ref_model: null
+args: 
+  _target_: trainers.star_trainer.StarTrainingArguments
+  batch_size: 512
+  mini_batch_size: 16
+  learning_rate: 1e-6
+  start_step: 0
+  log_with: wandb
+  output_dir: /scratch/gpfs/cd2853/models/
+  output_suffix: "_star"
+  logging_steps: 1
+  eval_steps: 1
+  save_steps: 1
+  warmup_ratio: 0.01
+  max_grad_norm: 1.0
+train_dataset_path: /home/cd2853/rational_metareasoning/data/filtered/train_all.json
+eval_dataset_path: /home/cd2853/rational_metareasoning/data/filtered/val_all.json
+test_dataset_path: /home/cd2853/rational_metareasoning/data/filtered/test_all.json
+type: star

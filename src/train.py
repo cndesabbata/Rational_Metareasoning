@@ -21,9 +21,7 @@ def train_model(cfg: DictConfig):
     trainer = instantiate(cfg.trainer)
     trainer.model_config = model_cfg
     trainer.set_logger(logger)
-    trainer.reward_model.logger = logger
     trainer.train()
-    trainer.save()
 
 if __name__ == "__main__":
     train_model()

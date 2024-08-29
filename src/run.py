@@ -25,6 +25,7 @@ def run_model(cfg: DictConfig):
     output_suffix = ("_" + cfg.output_suffix) if cfg.output_suffix is not None else ""
     few_shot_string = "_few_shot" if model.few_shot_dataset is not None else ""
     output_path = f"{output_dir}/{model.model_name}/{model.inference_mode}{few_shot_string}{output_suffix}.json"
+    logger.info(f"Output path: {output_path}")
     os.makedirs(os.path.dirname("/".join(output_path.split("/")[:-1])), exist_ok=True)
     if os.path.exists(output_path):
         df = pd.read_json(output_path)
@@ -33,9 +34,9 @@ def run_model(cfg: DictConfig):
     if all(col not in df.columns for col in ["thought", "response"]):
         df["thought"] = ""
         df["response"] = ""
-    processed = df[(df["thought"] != "") & (df["response"] != "")].copy()
+    processed = df[df["response"] != ""].copy()
     logger.info(f"Already processed: {len(processed)}")
-    remaining = df[(df["thought"] == "") & (df["response"] == "")].copy()
+    remaining = df[df["response"] == ""].copy()
     logger.info(f"Remaining: {len(remaining)}")
     batch_size = 4
     pbar = tqdm(total=len(remaining)//batch_size)

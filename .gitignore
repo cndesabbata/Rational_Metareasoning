@@ -1,7 +1,3 @@
-data/*
-
-*.yaml
-
 *.out
 *.slurm
 *.log

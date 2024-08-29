@@ -14,10 +14,11 @@ from tqdm import tqdm
 
 SYSTEM_PROMPT = """You are an intelligent and helpful assistant, who has to solve the user's problems. The user will ask you a question and you will have to provide the best possible answer. You can think step by step to get to the solution. You must follow these instructions:
 - Read the question carefully.
-- You MUST use the minimum number of steps to get to the solution.
-- You can use structured reasoning and math/logic symbols if necessary, but write it in plain text (don't use LaTeX).
+- Your reasoning must be brief and concise (no more than a few sentences).
+- Use simple and clear language.
 - Separate thought ("Thought: ...") and answer ("Answer: ...")
 - When reasoning, you can use first-person singular pronouns.
+- If you need to use math, write it in plain text, without using LaTeX syntax.
 - The user could give you a hint to help you solve the problem. If this is the case, you must not mention the hint in your answer.
 Remember to be concise in your reasoning and to provide a clear and simple answer to the user's question.
 """
@@ -28,13 +29,9 @@ HINT_STRING = "[Correct answer: {answer}]"
 
 
 COSTS_PER_TOKEN = {
-    "gpt-3.5-turbo-0125": {
-        "input": 5e-7,
-        "output": 1.5e-6
-    },
-    "gpt-4-0125-preview": {
-        "input": 1e-5,
-        "output": 3e-6
+    "gpt-4o-2024-05-13": {
+        "input": 5e-6,
+        "output": 15e-6
     }
 }
 
@@ -113,6 +110,7 @@ class OpenAIModel():
 def add_thought(df: pd.DataFrame):
     model = OpenAIModel(logger_name="few_shot", do_compute_cost=False)
     pbar = tqdm(total=len(df[df["thought"] == ""]))
+    print(f"Remaining: {len(df[df['thought'] == ''])}")
     def _add_thought_row(row: pd.Series):
         if len(row["thought"]) > 0:
             return row["thought"]
@@ -126,7 +124,9 @@ def add_thought(df: pd.DataFrame):
             answer = model.generate(messages)
             try:
                 thought = answer.split("Thought: ")[1].split("Answer: ")[0]
-                break
+                answer = answer.split("Answer: ")[1]
+                if len(thought) > 0 and answer == row["answer"]:
+                    break
             except:
                 continue
         pbar.update(1)
@@ -136,8 +136,10 @@ def add_thought(df: pd.DataFrame):
 
 
 if __name__ == "__main__":
-    path = "/home/cd2853/rational_metareasoning/data/few_shot_prompts.json"
+    path = "/home/cd2853/rational_metareasoning/data/mmlu_pro_few_shot_prompts.json"
     df = pd.read_json(path)
+    if "thought" not in df.columns:
+        df["thought"] = ""
     df = add_thought(df)
     save_to(df, path)
     

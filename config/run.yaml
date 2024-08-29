@@ -1,0 +1,12 @@
+data_path: ../data/filtered/test_all.json
+output_dir: ../data/results
+output_suffix: null
+defaults:
+- model: phi 
+- override hydra/hydra_logging: disabled  
+- override hydra/job_logging: disabled  
+  
+hydra:  
+  output_subdir: null  
+  run:  
+    dir: .
