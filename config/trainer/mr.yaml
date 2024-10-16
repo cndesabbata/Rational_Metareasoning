@@ -1,4 +1,4 @@
-_target_: trainers.star_trainer.StarTrainer
+_target_: trainers.mr_trainer.MRTrainer
 # @package _global_
 defaults:
 - /model: phi
@@ -9,7 +9,9 @@ args:
   learning_rate: 1e-6
   start_step: 0
   output_dir: insert_output_dir
-  output_suffix: "_star"
+  output_suffix: "_mr"
+  rollout_sample_size: 3
+  voc_gamma: 1e-1 
   logging_steps: 1
   eval_steps: 1
   save_steps: 1
@@ -18,4 +20,5 @@ args:
 train_dataset_path: insert_path_to_train_dataset
 eval_dataset_path: insert_path_to_eval_dataset
 test_dataset_path: insert_path_to_test_dataset
-type: star
+type: mr
+force_direct: false

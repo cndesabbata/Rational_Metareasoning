@@ -1,15 +1,13 @@
 import torch
 import logging
-
-from policy_model import AgentPretrainedModel
-from typing import Dict, List
+from policy_model import PretrainedModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from utils import logprobs_from_logits
 
 class RewardModel():
 
     def __init__(self,
-            model: AgentPretrainedModel,
+            model: PretrainedModel,
             voc_gamma: float = 1e-2,
             logger: logging.Logger = None,
             device: torch.device = None,
@@ -38,21 +36,15 @@ class RewardModel():
             attention_mask=attention_mask,
             target_mask=target_mask,
         )
-        torch.set_printoptions(precision=4, sci_mode=False)
         self.logger.info(f"Scores: {target_probabilities.view(-1, self.sample_size)}")
         ### Compute utility score (probability increment)
-        # scores = (target_probabilities.view(-1, self.sample_size) - target_probabilities.view(-1, self.sample_size)[:, -1].unsqueeze(1)).view(-1)
-        scores = torch.log((target_probabilities.view(-1, self.sample_size) + 1e-3) / (target_probabilities.view(-1, self.sample_size)[:, -1].unsqueeze(1) + 1e-3)).view(-1)
-        # self.logger.info(f"Scores: {scores.view(-1, self.sample_size)}")
+        scores = torch.log((target_probabilities.view(-1, self.sample_size) + 1e-4) / (target_probabilities.view(-1, self.sample_size)[:, -1].unsqueeze(1) + 1e-4)).view(-1)
         ### Compute penalties 
         lengths = thoughts_mask.sum(dim=1).float().view(-1, self.sample_size)
-        penalties = self.voc_gamma * ((lengths - lengths.min(dim=1).values.unsqueeze(1))).view(-1).to(self.device)
         ### Compute rewards
+        penalties = self.voc_gamma * torch.log(lengths + torch.ones_like(lengths)).view(-1).to(self.device)
         rewards = scores - penalties
         ### Log results
-        # self.logger.info(f"Lenghts: Mean {lengths.mean():.4f}, Std {lengths.std():.4f}, Max {lengths.max():.4f}, Min {lengths.min():.4f}")
-        # self.logger.info(f"Penalties: Mean {penalties.mean():.4f}, Std {penalties.std():.4f}, Max {penalties.max():.4f}, Min {penalties.min():.4f}")
-        # self.logger.info(f"Scores: Mean {scores.mean():.4f}, Std {scores.std():.4f}, Max {scores.max():.4f}, Min {scores.min():.4f}")
         decoded_inputs = [self.tokenizer.decode(i, skip_special_tokens=False) for i in input_ids]
         zipped_results = list(zip(decoded_inputs, scores.view(-1), penalties.view(-1), rewards.view(-1)))
         for i, (decoded_input, score, penalty, score_penalized) in enumerate(zipped_results):
@@ -79,15 +71,8 @@ class RewardModel():
             )
             logits = outputs.logits[:, :-1, :].contiguous()
         ### Gather logprobs
-        # decoded_input_ids = [model.tokenizer.batch_decode(i[mask.bool()][2:-2], skip_special_tokens=False) for i, mask in zip(input_ids, target_mask)]
         target = torch.where(target_mask==0, torch.ones_like(input_ids).to(model.device)*model.tokenizer.pad_token_id, input_ids)[:, 1:]
         target_mask = target_mask[:, 1:]
         logprobs = logprobs_from_logits(logits, target)
-        # probs_to_print = [torch.exp(lp[m.bool()][2:-2]) for lp, m in zip(logprobs, target_mask)]
-        if any([x in model.model_name for x in ["phi-2", "Meta-Llama-3-8B", "gemma-2-2b"]]):
-            probabilities = torch.tensor([torch.exp(lp[m.bool()][2:-2]).prod() for lp, m in zip(logprobs, target_mask)]).to(model.device)
-            # for i, (decoded_input, probs) in enumerate(zip(decoded_input_ids, probs_to_print)):
-            #     model.logger.info(f"Input: {decoded_input}\nProb: {probs}\n")
-        else:
-            probabilities = torch.tensor([torch.exp(lp[m.bool()][2:-3]).prod() for lp, m in zip(logprobs, target_mask)]).to(model.device)
+        probabilities = torch.tensor([torch.exp(lp[m.bool()][2:-2]).prod() for lp, m in zip(logprobs, target_mask)]).to(model.device)
         return probabilities

@@ -1,5 +1,5 @@
-data_path: ../data/filtered/test_all.json
-output_dir: ../data/results
+data_path: insert_path_to_data
+output_dir: insert_output_dir
 output_suffix: null
 defaults:
 - model: phi 

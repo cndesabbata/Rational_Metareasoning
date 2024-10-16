@@ -1,11 +1,11 @@
-_target_: policy_model.MistralAgent
+_target_: policy_model.MistralModel
 config:
-  model_name_or_path: "/scratch/gpfs/cd2853/models/Mistral-7B-Instruct-v0.3"
+  model_name_or_path: insert_model_name_or_path
   generation_args:
     temperature: 0.0
     max_new_tokens: 512
     repetition_penalty: 1.0
     do_sample: False
     no_repeat_ngram_size: 0
-  inference_mode: "rmr"
-  few_shot_path: /home/cd2853/rational_metareasoning/data/few_shot_prompts.json
+  inference_mode: "cot"
+  few_shot_path: insert_few_shot_path

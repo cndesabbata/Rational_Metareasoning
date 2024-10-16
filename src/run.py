@@ -1,4 +1,3 @@
-
 import pandas as pd
 import logging
 import os
@@ -6,7 +5,6 @@ import sys
 import hydra
 from hydra.utils import instantiate
 from omegaconf import DictConfig
-from datasets import Dataset
 from utils import (
     save_to,
     set_logger
@@ -38,7 +36,7 @@ def run_model(cfg: DictConfig):
     logger.info(f"Already processed: {len(processed)}")
     remaining = df[df["response"] == ""].copy()
     logger.info(f"Remaining: {len(remaining)}")
-    batch_size = 4
+    batch_size = 8
     pbar = tqdm(total=len(remaining)//batch_size)
     thoughts = []
     inputs = remaining["question"].tolist()

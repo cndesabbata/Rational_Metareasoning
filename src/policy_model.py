@@ -1,59 +1,37 @@
-import os
 import pandas as pd
 import torch
-import torch.nn.functional as F
-from torch import nn
-from typing import Dict, Any, List, Union, Optional, Tuple
-from dataclasses import dataclass, field
+from typing import Dict, Any, List, Union
 from transformers import (
-    StoppingCriteria,
-    StoppingCriteriaList,
     LlamaForCausalLM,
     PhiForCausalLM,
     MistralForCausalLM,
-    Gemma2ForCausalLM,
-    GemmaForCausalLM,
-    Phi3ForCausalLM,
     AutoModelForCausalLM,
     AutoTokenizer
 )
 from utils import (
-    DATASET_TO_PREF,
-    MODE_TO_INSTRUCTION,
     split_thought_and_answer,
-    logprobs_from_logits,
     trim
 )
-from transformers.modeling_outputs import CausalLMOutputWithPast
-from torch.nn import CrossEntropyLoss
 
-@dataclass
-class PolicyModelOutput(CausalLMOutputWithPast):
-    logprobs: torch.FloatTensor = None
-    value: Optional[torch.FloatTensor] = None
-
-class AgentPretrainedModel:
+class PretrainedModel:
     
     def __init__(self, config: Dict[str, Any]):
+        ### Load model
         model = AutoModelForCausalLM.from_pretrained(config.model_name_or_path, device_map="auto", torch_dtype="auto")
         self.model_name = config.model_name_or_path.split("/")[-1]
+        self.__dict__.update(model.__dict__)
+        ### Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(config.model_name_or_path)
         if not self.tokenizer.pad_token_id:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         self.tokenizer.padding_side = "left"
-        self.__dict__.update(model.__dict__)
+        ### Set attributes
         self.logger = None
         self.few_shot_dataset = pd.read_json(config.few_shot_path) if config.few_shot_path else None
         self.current_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.value_head = None 
         self.inference_mode = config.inference_mode
-        self.instruction = MODE_TO_INSTRUCTION[config.inference_mode] if "instruct" in self.model_name.lower() else ""
         self.generation_args = config.generation_args
-
-    def add_meta_tokens(self):
-        '''Use meta tokens to separate the thought from the answer.'''
-        self.thought_format = "<thought>{thought}</thought>\n"
 
     def log_model_output(self, prompt, completion):
         '''Log the model output to the logger.'''
@@ -78,6 +56,7 @@ class AgentPretrainedModel:
         ### If datasets are not provided, don't use few-shot examples
         prefixes = self.build_few_shot(datasets, hint=hint) if datasets is not None else ["" for _ in range(len(questions))]
         prompts = []
+        ### If the gold truth (completions) is not provided, hints must be disabled
         if completions is None:
             completions = ["" for _ in range(len(questions))]
             hint = False
@@ -86,8 +65,7 @@ class AgentPretrainedModel:
         for i, (q, c, pref, d) in enumerate(zip(questions, completions, prefixes, datasets)):
             hint_str = f"\n(The correct answer is {c})" if hint else ""
             d = d.split("_")[0] if "mmlu" in d else d
-            data_pref = DATASET_TO_PREF.get(d, "") if self.instruction != "" else ""
-            question = self.user_format.format(user=self.instruction + data_pref + q + hint_str)
+            question = self.user_format.format(user=q + hint_str)
             suffix = "Answer:" if self.inference_mode == "direct" else ""
             formatted_chat = self.tokenizer.bos_token + pref + question + suffix
             prompts.append(formatted_chat)
@@ -111,24 +89,22 @@ class AgentPretrainedModel:
             except:
                 prefixes.append("")
                 continue
-            df = df.sort_values(by='thought', key=lambda x: x.str.len())
             questions = df['user'].tolist()
             thoughts = df['thought'].tolist()
             answers = df['answer'].tolist()
-            data_pref = DATASET_TO_PREF.get(dataset, "") if self.instruction != "" else ""
             few_shots = []
             ### Format the few-shot examples as chat
             current_length = 0
             for i, (questions_i, thoughts_i, answers_i) in enumerate(zip(questions, thoughts, answers)):
                 hint_str = f"\n(The correct answer is {answers_i})" if use_hint else ""
-                question = self.user_format.format(user=self.instruction + data_pref + trim(questions_i) + hint_str)
+                question = self.user_format.format(user=trim(questions_i) + hint_str)
                 thought = self.thought_format.format(thought=trim(thoughts_i)) if (self.inference_mode != "direct" and thoughts_i != "") else ""
                 answer = self.assistant_format.format(assistant=trim(answers_i))
                 chat = question + thought + answer
                 current_length += len(self.tokenizer.encode(chat, return_tensors="pt")[0])
-                if current_length > 512:
-                    break
                 few_shots.append(chat)
+                if current_length > self.model_max_length // 2:
+                    break
             few_shots = "".join(few_shots) + ""
             prefixes.append(few_shots)
         return prefixes
@@ -151,9 +127,6 @@ class AgentPretrainedModel:
             input = [input]
         prompts = self.format_prompts(input, datasets=datasets) if format else input
         model_input = self.tokenizer(prompts, return_tensors="pt", padding=True).to(self.current_device)
-        # stopping_criteria = StoppingCriteriaList([
-        #     AnswerStoppingCriteria(self.tokenizer, self.current_device, self.stop_token)
-        # ])
         ### Generate the model output
         output_ids = self.generate(
             **model_input,
@@ -170,128 +143,32 @@ class AgentPretrainedModel:
             all_thoughts, all_answers = split_thought_and_answer(outputs)
         return all_thoughts, all_answers
 
-    def policy_forward(
-            self,
-            input_ids: torch.Tensor,
-            attention_mask: torch.Tensor,
-            mask: torch.Tensor = None,
-            compute_values: bool = False
-            ) -> PolicyModelOutput:
-        '''Forward pass of the model for RL training.
-        Args:
-            input_ids (torch.Tensor): The input token ids.
-            attention_mask (torch.Tensor): The attention mask.
-            mask (torch.Tensor, optional): The mask for the logprobs. Defaults to None.
-            compute_values (bool, optional): Whether to compute the values for PPO. Defaults to False.
-        Returns:
-            PolicyModelOutput: The model output.
-        '''
-        input_ids = input_ids.to(self.current_device)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=None,
-            past_key_values=None,
-            inputs_embeds=None,
-            use_cache=None,
-            output_attentions=None,
-            output_hidden_states=True,
-            return_dict=None,
-        )
-        hidden_states = outputs[0].to(self.current_device)
-        logits = self.lm_head(hidden_states)
-        logits = logits.float().to(self.current_device)
-        logprobs = logprobs_from_logits(logits[:, :-1, :], input_ids[:,1:], gather=True)
-        mask = mask.float() if mask is not None else torch.ones_like(input_ids[:,1:]).float()
-        logprobs = logprobs * mask
-        if not compute_values:
-            return PolicyModelOutput(
-                value=None,
-                logprobs=logprobs
-            )
-        if not self.value_head:
-            self.value_head = nn.Linear(self.config.hidden_size, 1).to(self.current_device)
-        values = self.value_head(hidden_states).squeeze(-1)[:,:-1]
-        values = values * mask
-        return PolicyModelOutput(
-            value=values,
-            logprobs=logprobs
-        )
-
-class AnswerStoppingCriteria(StoppingCriteria):
-    '''Stops the generation when the model outputs the first newline character after the "Answer:" tokens.'''
-    
-    def __init__(self, tokenizer, device, stop_token):
-        self.stop_token = tokenizer.encode(stop_token, add_special_tokens=False)[-1]
-        self.tokenizer = tokenizer
-        self.answer_tokens = self.tokenizer.encode("\nAnswer:", add_special_tokens=False, return_tensors="pt").squeeze().to(device)[-2:]
-
-    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> torch.BoolTensor:
-        batch_size = input_ids.shape[0]
-        finished = torch.zeros(batch_size, dtype=torch.bool).to(input_ids.device).bool()
-        contains_answer_tokens = (input_ids[:, -16:].unfold(1, len(self.answer_tokens), 1) == self.answer_tokens.unsqueeze(0)).all(-1).any(-1)
-        ends_with_new_line = input_ids[:, -1] == self.stop_token
-        ends_with_eos = input_ids[:, -1] == self.tokenizer.eos_token_id
-        finished = ends_with_eos | (contains_answer_tokens & ends_with_new_line)
-        return finished
-
-class LlamaAgent(AgentPretrainedModel, LlamaForCausalLM):
+class LlamaModel(PretrainedModel, LlamaForCausalLM):
 
     def __init__(self, config: Dict[str, Any]):
-        AgentPretrainedModel.__init__(self, config)
-        # self.user_format = "<|start_header_id|>user<|end_header_id|>\n\n{user}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-        # self.assistant_format = "Answer: {assistant} \n<|eot_id|>"
-        # self.thought_format = "Thought: {thought}\n"
+        PretrainedModel.__init__(self, config)
         self.user_format = "Question: {user}\n"
         self.assistant_format = "Answer: {assistant}\n\n"
         self.thought_format = "Thought: {thought}\n"
         self.stop_token = "\n\n"
+        self.model_max_length = 8192
 
-class LlamaInstructAgent(AgentPretrainedModel, LlamaForCausalLM):
-
-    def __init__(self, config: Dict[str, Any]):
-        AgentPretrainedModel.__init__(self, config)
-        self.user_format = "<|start_header_id|>user<|end_header_id|>\n\n{user}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-        self.assistant_format = "Answer: {assistant} \n<|eot_id|>"
-        self.thought_format = "Thought: {thought}\n"
-        self.stop_token = "\n\n"
-
-class MistralAgent(AgentPretrainedModel, MistralForCausalLM):
+class MistralModel(PretrainedModel, MistralForCausalLM):
 
     def __init__(self, config: Dict[str, Any]):
-        AgentPretrainedModel.__init__(self, config)
-        self.user_format = "[INST] {user}\n[/INST]"
-        self.assistant_format = "Answer: {assistant}\n\n"
-        self.thought_format = "Thought: {thought}\n"
-        self.stop_token = "\n\n"
-
-class Phi3Agent(AgentPretrainedModel, Phi3ForCausalLM):
-
-    def __init__(self, config: Dict[str, Any]):
-        AgentPretrainedModel.__init__(self, config)
-        self.user_format = "<|user|>\n{user}\n<|end|>\n<|assistant|>"
-        self.assistant_format = "Answer: {assistant}\n<|end|>"
-        self.thought_format = "Thought: {thought}\n"
-        self.stop_token = "<|end|>"
-        
-class GemmaAgent(AgentPretrainedModel, Gemma2ForCausalLM):
-
-    def __init__(self, config: Dict[str, Any]):
-        AgentPretrainedModel.__init__(self, config)
-        # self.user_format = "<start_of_turn>user\n{user}\n<end_of_turn>\n<start_of_turn>model"
-        # self.assistant_format = "Answer: {assistant}\n<end_of_turn>"
-        # self.thought_format = "Thought: {thought}\n"
-        # self.stop_token = "<end_of_turn>"
+        PretrainedModel.__init__(self, config)
         self.user_format = "Question: {user}\n"
         self.assistant_format = "Answer: {assistant}\n\n"
         self.thought_format = "Thought: {thought}\n"
         self.stop_token = "\n\n"
+        self.model_max_length = 8192
 
-class Phi2Agent(AgentPretrainedModel, PhiForCausalLM):
+class Phi2Model(PretrainedModel, PhiForCausalLM):
 
     def __init__(self, config: Dict[str, Any]):
-        AgentPretrainedModel.__init__(self, config)
+        PretrainedModel.__init__(self, config)
         self.user_format = "Question: {user}\n"
         self.assistant_format = "Answer: {assistant}\n\n"
         self.thought_format = "Thought: {thought}\n"
         self.stop_token = "\n\n"
+        self.model_max_length = 2048
