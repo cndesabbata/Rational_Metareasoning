@@ -1,5 +1,5 @@
 import torch
-from src.trainers.ei_trainer import EITrainer
+from trainers.ei_trainer import EITrainer
 import os
 import torch
 import os
@@ -74,6 +74,8 @@ class MRTrainer(EITrainer):
                 dataset_j = df_j.drop(columns=['correct']).to_dict(orient='list')
                 for k, v in fixed_dataset.items():
                     dataset_j[k] = dataset_j.get(k, []) + v
+            else:
+                dataset_j['with_hint'] = [False] * len(dataset_j['_id'])
             for k, v in dataset_j.items():
                 new_dataset[k] = new_dataset.get(k, []) + v  
         new_dataset['_id'] = new_dataset['_id'] + ids
@@ -101,9 +103,13 @@ class MRTrainer(EITrainer):
         new_dataframe['correct'] = new_dataframe.apply(lambda x: is_correct(x['response'], x['answer']), axis=1)
         correct_ids = new_dataframe[new_dataframe['correct'] > 0]['_id'].unique().tolist()
         new_dataframe = new_dataframe[new_dataframe['_id'].isin(correct_ids)]
-        # new_dataframe = new_dataframe[(new_dataframe['correct'] > 0) | (new_dataframe['response'] == "")]
         new_dataframe = new_dataframe[(new_dataframe['correct'] > 0) | (new_dataframe['reward'] >= 0)]
-        new_dataframe = new_dataframe.sort_values(by='reward', ascending=False).drop_duplicates(subset=['_id'], keep='first')
+        # new_dataframe = new_dataframe[(new_dataframe['reward'] >= 0)]
+        # new_dataframe = new_dataframe.sort_values(by='reward', ascending=False).drop_duplicates(subset=['_id'], keep='first')
+        ### Instead of keeping the first, keep the ones with score higher than batch average (computed by grouping by _id)
+        new_dataframe['mean_by_id'] = new_dataframe.groupby('_id')['reward'].transform('mean')
+        new_dataframe = new_dataframe[new_dataframe['reward'] >= new_dataframe['mean_by_id']]
+        new_dataframe = new_dataframe.drop(columns=['mean_by_id'])
         new_dataset = Dataset.from_pandas(new_dataframe.sample(frac=1, random_state=42), preserve_index=False)
         return new_dataset
 

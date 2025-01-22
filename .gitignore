@@ -4,3 +4,6 @@
 *.ipynb
 *.png
 *.json
+*.pyc
+*/__pycache__/*
+config/*

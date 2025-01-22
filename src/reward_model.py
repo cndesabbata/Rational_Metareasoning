@@ -43,6 +43,7 @@ class RewardModel():
         lengths = thoughts_mask.sum(dim=1).float().view(-1, self.sample_size)
         ### Compute rewards
         penalties = self.voc_gamma * torch.log(lengths + torch.ones_like(lengths)).view(-1).to(self.device)
+        # penalties = self.voc_gamma * lengths.view(-1).to(self.device)
         rewards = scores - penalties
         ### Log results
         decoded_inputs = [self.tokenizer.decode(i, skip_special_tokens=False) for i in input_ids]

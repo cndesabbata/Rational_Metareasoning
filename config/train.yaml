@@ -1,6 +1,6 @@
 
 defaults:
-- trainer: ei 
+- trainer: mr
 - override hydra/hydra_logging: disabled  
 - override hydra/job_logging: disabled  
   

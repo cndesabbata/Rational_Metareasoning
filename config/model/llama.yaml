@@ -1,6 +1,6 @@
 _target_: policy_model.LlamaModel
 config:
-  model_name_or_path: insert_model_name_or_path
+  model_name_or_path: /scratch/gpfs/cd2853/models/Meta-Llama-3-8B
   generation_args:
     temperature: 0.0
     max_new_tokens: 512
@@ -8,4 +8,5 @@ config:
     do_sample: False
     no_repeat_ngram_size: 0
   inference_mode: "cot"
-  few_shot_path: insert_few_shot_path
+  few_shot_path: "/home/cd2853/rational_metareasoning/data/few_shot_prompts.json"
+  instruction: false

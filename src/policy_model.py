@@ -13,6 +13,8 @@ from utils import (
     trim
 )
 
+INSTRUCTION = "Answer the following question, thinking step by step to get to the answer. You can think however long you need, but answer as soon as you're ready. Keep you response concise and use the minimum number of steps to get to the answer. Once you're finished thinking, write your answer after the 'Answer: ' prompt.\n"
+
 class PretrainedModel:
     
     def __init__(self, config: Dict[str, Any]):
@@ -32,6 +34,7 @@ class PretrainedModel:
         self.current_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.inference_mode = config.inference_mode
         self.generation_args = config.generation_args
+        self.instruction = INSTRUCTION if config.instruction else ""
 
     def log_model_output(self, prompt, completion):
         '''Log the model output to the logger.'''
@@ -65,7 +68,7 @@ class PretrainedModel:
         for i, (q, c, pref, d) in enumerate(zip(questions, completions, prefixes, datasets)):
             hint_str = f"\n(The correct answer is {c})" if hint else ""
             d = d.split("_")[0] if "mmlu" in d else d
-            question = self.user_format.format(user=q + hint_str)
+            question = self.user_format.format(user=self.instruction + q + hint_str)
             suffix = "Answer:" if self.inference_mode == "direct" else ""
             formatted_chat = self.tokenizer.bos_token + pref + question + suffix
             prompts.append(formatted_chat)
@@ -82,13 +85,13 @@ class PretrainedModel:
         if self.few_shot_dataset is None:
             return ["" for _ in range(len(datasets))]
         prefixes = []
+        default = self.few_shot_dataset.sample(5, random_state=1)
         for i, dataset in enumerate(datasets):
             use_hint = hint
             try:
                 df = self.few_shot_dataset[self.few_shot_dataset["dataset"] == dataset].sample(5)
             except:
-                prefixes.append("")
-                continue
+                df = default
             questions = df['user'].tolist()
             thoughts = df['thought'].tolist()
             answers = df['answer'].tolist()
@@ -149,6 +152,16 @@ class LlamaModel(PretrainedModel, LlamaForCausalLM):
         PretrainedModel.__init__(self, config)
         self.user_format = "Question: {user}\n"
         self.assistant_format = "Answer: {assistant}\n\n"
+        self.thought_format = "Thought: {thought}\n"
+        self.stop_token = "\n\n"
+        self.model_max_length = 8192
+
+class LlamaInstructModel(PretrainedModel, LlamaForCausalLM):
+
+    def __init__(self, config: Dict[str, Any]):
+        PretrainedModel.__init__(self, config)
+        self.user_format = "<|start_header_id|>user<|end_header_id|>\n\nQuestion: {user}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        self.assistant_format = "Answer: {assistant}\n\n<|eot_id|>"
         self.thought_format = "Thought: {thought}\n"
         self.stop_token = "\n\n"
         self.model_max_length = 8192

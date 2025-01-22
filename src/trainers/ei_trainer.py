@@ -52,6 +52,8 @@ class EITrainingArguments(TrainingArguments):
 
     warmup_ratio: float = field(default=0.01, metadata={"help": "Warmup ratio."})
 
+    use_hint: bool = field(default=True, metadata={"help": "Use hint for training."})
+
     data_dir: str = field(default="", metadata={"help": "Data directory."})
 
 
@@ -81,7 +83,7 @@ class EITrainer():
             test_dataset_path: str = None,
             max_seq_length: Optional[int] = None,
             type: str = "",
-            force_direct: bool = True
+            force_direct: bool = False
         ):
         self.logger = None
         ### Training arguments
@@ -325,18 +327,18 @@ class EITrainer():
         ### Rollouts from policy
         columns = ["_id", "question", "answer", "thought", "response", "dataset", "reward"]
         try:
-            new_path = self.args.data_dir + f"/train_{self.policy_model.model_name}{self.mod_str}_{self.type}_step_{step}.json"
+            new_path = self.args.data_dir + f"/train_{self.policy_model.model_name}{self.mod_str}{self.args.output_suffix}_step_{step}.json"
             dataset = self.load_dataset(new_path, shuffle=False)
             return dataset.to_dict()
         except FileNotFoundError:
             pass
         self.logger.info(f"Sampling rollouts from policy model")
-        use_hint = True
+        use_hint = self.args.use_hint
         ### Iterate over batch to generate data
         new_batch = self.sample_rollouts(batch, hint=use_hint, step=step).to_dict()
         new_dataset = Dataset.from_dict(new_batch)
         ### Save dataset
-        new_path = self.args.data_dir + f"/train_{self.policy_model.model_name}{self.mod_str}_{self.type}_step_{step}.json"
+        new_path = self.args.data_dir + f"/train_{self.policy_model.model_name}{self.mod_str}{self.args.output_suffix}_step_{step}.json"
         os.makedirs(self.args.data_dir, exist_ok=True)
         df = new_dataset.to_pandas()[columns].sample(frac=1, random_state=42).reset_index(drop=True)
         save_to(df, new_path)

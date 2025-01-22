@@ -1,5 +1,5 @@
 import torch
-from src.trainers.ei_trainer import EITrainer
+from trainers.ei_trainer import EITrainer
 import os
 import torch
 import os
