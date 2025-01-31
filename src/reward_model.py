@@ -19,7 +19,7 @@ class RewardModel():
         self.logger = logger
         self.tokenizer = tokenizer
         self.sample_size = sample_size+1
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or model.device
 
     def compute_scores(
             self, 
@@ -38,7 +38,7 @@ class RewardModel():
         )
         self.logger.info(f"Scores: {target_probabilities.view(-1, self.sample_size)}")
         ### Compute utility score (probability increment)
-        scores = torch.log((target_probabilities.view(-1, self.sample_size) + 1e-4) / (target_probabilities.view(-1, self.sample_size)[:, -1].unsqueeze(1) + 1e-4)).view(-1)
+        scores = torch.log((target_probabilities.view(-1, self.sample_size) + 1e-6) / (target_probabilities.view(-1, self.sample_size)[:, -1].unsqueeze(1) + 1e-6)).view(-1)
         ### Compute penalties 
         lengths = thoughts_mask.sum(dim=1).float().view(-1, self.sample_size)
         ### Compute rewards
@@ -48,8 +48,8 @@ class RewardModel():
         ### Log results
         decoded_inputs = [self.tokenizer.decode(i, skip_special_tokens=False) for i in input_ids]
         zipped_results = list(zip(decoded_inputs, scores.view(-1), penalties.view(-1), rewards.view(-1)))
-        for i, (decoded_input, score, penalty, score_penalized) in enumerate(zipped_results):
-            self.logger.info(f"Input: {decoded_input}\nScore: {score:.4f}, Penalty: {penalty:.4f}, Score penalized: {score_penalized:.4f}\n")
+        # for i, (decoded_input, score, penalty, score_penalized) in enumerate(zipped_results):
+        #     self.logger.info(f"Input: {decoded_input}\nScore: {score:.4f}, Penalty: {penalty:.4f}, Score penalized: {score_penalized:.4f}\n")
         ### Return rewards
         return rewards
     

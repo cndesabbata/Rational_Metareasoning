@@ -1,8 +1,8 @@
-data_path: insert_path_to_data
-output_dir: insert_output_dir
+data_path: /mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/data/filtered/train_all.json
+output_dir: /mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/data/results
 output_suffix: null
 defaults:
-- model: phi 
+- model: phi2
 - override hydra/hydra_logging: disabled  
 - override hydra/job_logging: disabled  
   

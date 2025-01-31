@@ -6,6 +6,7 @@ import logging
 import torch.nn.functional as F
 from typing import List
 from datetime import date as d
+from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
 ######################## Splitting thoughts and answers ########################
 
@@ -58,7 +59,7 @@ def set_logger(logger_name:str, dir: str = None, date: str = None) -> logging.Lo
         date = d.today().strftime("%Y-%m-%d")
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
-    log_folder = f"/home/cd2853/rational_metareasoning/src/logs/{date}" if not dir else f"{dir}"
+    log_folder = f"/mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/src/logs/{date}" if not dir else f"{dir}"
     if not os.path.exists(log_folder):
         os.makedirs(log_folder)
     v = 1
@@ -79,3 +80,23 @@ def is_correct(model_answer: str, true_answer: str) -> int:
     model_answer = model_answer.split("Answer:")[-1].split("\n")[0].strip()
     true_answer = true_answer.split("Answer:")[-1].split("\n")[0].strip()
     return int(true_answer.lower() == model_answer.lower())
+
+######################## Print GPU utilization ########################
+
+def print_gpu_utilization():
+    nvmlInit()
+    print(f"Number of available GPUs: {torch.cuda.device_count()}.")
+    print("GPU memory utilization:")
+    for i in range(torch.cuda.device_count()):
+        handle = nvmlDeviceGetHandleByIndex(i)
+        info = nvmlDeviceGetMemoryInfo(handle)
+        print(f"GPU {i}: {info.used/info.total*100:.2f}% | {info.used/1024**3:.2f}GB/{info.total/1024**3:.2f}GB")
+
+######################## Parse model output ########################
+
+def parse_model_output(outputs: [str]) -> tuple:
+    thoughts, answers = [], []
+    for output in outputs:
+        answer = output.split("Answer:")[-1].split("\n")[0].strip()
+    return thoughts, answers
+    

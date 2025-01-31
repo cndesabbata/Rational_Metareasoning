@@ -1,15 +1,15 @@
 _target_: trainers.star_trainer.StarTrainer
 # @package _global_
 defaults:
-- /model: phi
+- /model: phi2
 args: 
   _target_: trainers.ei_trainer.EITrainingArguments
   batch_size: 512
   mini_batch_size: 16
   learning_rate: 1e-6
   start_step: 0
-  output_dir: insert_output_dir
-  data_dir: insert_path_to_data
+  output_dir: /mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/models/
+  data_dir: /mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/data/training_data/
   output_suffix: "_star"
   logging_steps: 1
   eval_steps: 1
@@ -17,7 +17,8 @@ args:
   warmup_ratio: 0.01
   max_grad_norm: 1.0
   use_hint: true
-train_dataset_path: insert_path_to_train_dataset
-eval_dataset_path: insert_path_to_eval_dataset
-test_dataset_path: insert_path_to_test_dataset
+  gradient_checkpointing: true
+train_dataset_path: /mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/data/filtered/train_all.json
+eval_dataset_path: /mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/data/filtered/val_all.json
+test_dataset_path: /mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/data/filtered/test_all.json
 type: star

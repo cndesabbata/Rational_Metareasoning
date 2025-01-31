@@ -1,6 +1,6 @@
 _target_: policy_model.MistralModel
 config:
-  model_name_or_path: /scratch/gpfs/cd2853/models/Mistral-7B-v0.3
+  model_name_or_path: /mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/models/Mistral-7B-v0.3
   generation_args:
     temperature: 0.0
     max_new_tokens: 512
@@ -8,5 +8,5 @@ config:
     do_sample: False
     no_repeat_ngram_size: 0
   inference_mode: "cot"
-  few_shot_path: "/home/cd2853/rational_metareasoning/data/few_shot_prompts.json"
+  few_shot_path: "/mnt/u14157_ic_nlp_001_files_nfs/nlpdata1/home/desabbat/projects/Rational_Metareasoning/data/few_shot_prompts.json"
   instruction: false

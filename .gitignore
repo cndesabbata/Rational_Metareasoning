@@ -5,5 +5,7 @@
 *.png
 *.json
 *.pyc
+models/*
+data/*
 */__pycache__/*
 config/*
